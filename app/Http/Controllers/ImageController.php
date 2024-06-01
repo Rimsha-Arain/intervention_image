@@ -2,60 +2,90 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
-use Intervention\Image\Laravel\Facades\Image;
 use Intervention\Image\ImageManager;
+use Intervention\Image\Facades\Image;
 use Intervention\Image\Drivers\Gd\Driver;
+//use Intervention\Image\Drivers\Imagick\Driver;
+
+use Illuminate\Http\Request;
 
 class ImageController extends Controller
 {
-    // Function to display the file upload form
-    public function fileUpload() {
+    public function fileUpload()
+    {
         return view('image-upload');
     }
-
-    // Function to handle image upload and processing
-    public function storeImage(Request $request){
-        // Validate the uploaded image file
+    public function storeImage(Request $request)
+    {
         $request->validate([
-            'image' => 'required|image|mimes:jpeg,png,jpg,gif,svg|max:800', // Changed max size to 800KB
+            'image' => 'required|image|mimes:jpeg,png,jpg,gif,svg|max:2048',
         ]);
 
-        // Handle the uploaded image
         $image = $request->file('image');
-
-        // Generate a unique name for the image using the current timestamp and the original file extension
         $imageName = time() . '.' . $image->getClientOriginalExtension();
-
-        // Move the uploaded image to the 'uploads' directory
         $image->move('uploads', $imageName);
 
-        // Create a new ImageManager instance with the desired driver
+        // Initialize the ImageManager with the GD driver
         $imgManager = new ImageManager(new Driver());
 
-        // Read the uploaded image from the 'uploads' directory
-        $thumbImage = $imgManager->read('uploads/' . $imageName);
+        // Save the original uploaded image
+        $originalImage = $imgManager->read(public_path('uploads/' . $imageName));
+        $originalImage->save(public_path('uploads/original/' . $imageName));
 
-        // Resize and crop the image to 1600x900 pixels
-        $thumbImage->cover(1600, 900);
+        // Resize while maintaining aspect ratio
+        $height = 1200;
+        $width = 1200;
+        $thumbImage = $imgManager->read(public_path('uploads/' . $imageName));
+        $thumbImage->resize($width, $height, function ($constraint) {
+            $constraint->aspectRatio();
+            $constraint->upsize();
+        });
+        $thumbImage->save(public_path('uploads/thumbnails/' . $imageName));
 
-        // Initial quality
-        $quality = 90;
-
-        // Save the resized image to the 'uploads/thumbnails' directory
-        $response = $thumbImage->save(public_path('uploads/thumbnails/' . $imageName), $quality);
-
-        // Check if the image size is larger than 800KB and reduce quality if necessary
-        $maxFileSize = 800 * 1024; // 800KB in bytes
-        while (filesize(public_path('uploads/thumbnails/' . $imageName)) > $maxFileSize && $quality > 10) {
-            $quality -= 10;
-            $response = $thumbImage->save(public_path('uploads/thumbnails/' . $imageName), $quality);
+        // Check image size by saving it and getting the file size
+        $thumbImage->save(public_path('uploads/' . $imageName));
+        $imageSize = filesize(public_path('uploads/' . $imageName));
+        if ($imageSize > 800 * 1024) {
+            $thumbImage->save(public_path('uploads/' . $imageName), 60);
+        } else {
+            $thumbImage->save(public_path('uploads/' . $imageName));
         }
 
-        // Check if the image was saved successfully
-        if ($response) {
-            return back()->with('success', 'Image uploaded and resized successfully.');
+        $this->generateThumbnails($imageName);
+
+        // Clean up temporary file
+        unlink(public_path('uploads/thumbnails/' . $imageName));
+
+        return redirect()->back()->with('success', 'Image uploaded and processed successfully.');
+    }
+
+    private function generateThumbnails($imageName)
+    {
+        $thumbnailSizes = [
+            200 => 'small',
+            400 => 'medium',
+            800 => 'large',
+        ];
+
+        $imgManager = new ImageManager(new Driver());
+
+        // Get the original image dimensions
+        $originalImage = $imgManager->read(public_path('uploads/' . $imageName));
+        $originalWidth = $originalImage->width();
+        $originalHeight = $originalImage->height();
+        $aspectRatio = $originalWidth / $originalHeight;
+
+        foreach ($thumbnailSizes as $width => $size) {
+            $thumbnailImage = $imgManager->read(public_path('uploads/' . $imageName));
+
+            // Calculate the new height based on the aspect ratio
+            $height = $width / $aspectRatio;
+            $thumbnailImage->resize($width, $height, function ($constraint) {
+                $constraint->aspectRatio();
+                $constraint->upsize();
+            });
+
+            $thumbnailImage->save(public_path('uploads/thumbnails/' . $size . '_' . $imageName));
         }
-        return back()->with('error', 'Unable to upload and resize image.');
     }
 }
